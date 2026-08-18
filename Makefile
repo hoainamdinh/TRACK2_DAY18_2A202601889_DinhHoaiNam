@@ -2,32 +2,53 @@
 ## Two paths: lightweight (default, pure Python) and Spark (Docker, optional).
 
 VENV       := .venv
-PY         := $(VENV)/bin/python
-PIP        := $(VENV)/bin/pip
-JUPYTER    := $(VENV)/bin/jupyter
-JUPYTEXT   := $(VENV)/bin/jupytext
-PYTEST     := $(VENV)/bin/pytest
+export PYTHONUTF8 := 1
+
+ifeq ($(OS),Windows_NT)
+    SHELL       := powershell.exe
+    .SHELLFLAGS := -NoProfile -Command
+    VENV_BIN    := Scripts
+    PYTHON      := python
+    EXE         := .exe
+else
+    VENV_BIN    := bin
+    PYTHON      := python3
+    EXE         :=
+endif
+
+PY         := $(VENV)/$(VENV_BIN)/python$(EXE)
+PIP        := $(VENV)/$(VENV_BIN)/pip$(EXE)
+JUPYTER    := $(VENV)/$(VENV_BIN)/jupyter$(EXE)
+JUPYTEXT   := $(VENV)/$(VENV_BIN)/jupytext$(EXE)
+PYTEST     := $(VENV)/$(VENV_BIN)/pytest$(EXE)
 COMPOSE    := docker compose -f docker/docker-compose.yml
 
 .DEFAULT_GOAL := help
 
 help: ## Show this help
-	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nLightweight path (default — no Docker):\n"} \
-	      /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@$(PYTHON) -c "import re; [print(f'  \033[36m{m.group(1):<14}\033[0m {m.group(2)}') for line in open('Makefile', encoding='utf-8') if (m := re.match(r'^([a-zA-Z_-]+):.*?##\s*(.*)', line))]"
 
 # ─────────────────────────────────────────────────────────────
 # Lightweight path (default) — pure Python, no Docker, no JVM
 # ─────────────────────────────────────────────────────────────
 
 setup: ## [lite] Create venv + install deps (~180 MB, ~20s with pip / ~4s with uv)
-	@command -v uv >/dev/null 2>&1 && uv venv $(VENV) --python '>=3.10,<3.15' || python3 -m venv $(VENV)
-	@$(PY) -c 'import sys; raise SystemExit(0 if (3,10)<=sys.version_info[:2]<(3,15) else 1)' \
-	  || { echo "ERROR: need Python 3.10-3.14. Install 'uv' (auto-fetches one) or run: python3.12 -m venv .venv"; exit 1; }
+ifeq ($(OS),Windows_NT)
+	@if (Get-Command uv -ErrorAction SilentlyContinue) { if (-not (Test-Path $(VENV))) { uv venv $(VENV) --python python }; uv pip install --python $(PY) -r requirements.txt } else { if (-not (Test-Path $(VENV))) { $(PYTHON) -m venv $(VENV) }; $(PIP) install -q -r requirements.txt }
+	@$(PY) -c "import sys; sys.exit(0 if (3,10)<=sys.version_info[:2]<(3,13) else 1)"
+	-@$(JUPYTEXT) --to notebook --update notebooks/*.py 2>$$null
+	@echo " "
+	@echo "Setup complete. Run make smoke then make lab."
+else
+	@command -v uv >/dev/null 2>&1 && uv venv $(VENV) --python '>=3.10,<3.13' || $(PYTHON) -m venv $(VENV)
+	@$(PY) -c 'import sys; raise SystemExit(0 if (3,10)<=sys.version_info[:2]<(3,13) else 1)' \
+	  || { echo "ERROR: need Python 3.10-3.12. Install 'uv' (auto-fetches one) or run: $(PYTHON) -m venv $(VENV)"; exit 1; }
 	@command -v uv >/dev/null 2>&1 && uv pip install --python $(PY) -r requirements.txt \
 	  || $(PIP) install -q -r requirements.txt
-	@$(JUPYTEXT) --to notebook --update notebooks/*.py 2>/dev/null || $(JUPYTEXT) --to notebook notebooks/*.py
-	@echo ""
-	@echo "  ✓ Setup complete. Run 'make smoke' then 'make lab'."
+	-@$(JUPYTEXT) --to notebook --update notebooks/*.py 2>/dev/null
+	@echo " "
+	@echo "Setup complete. Run make smoke then make lab."
+endif
 
 smoke: ## [lite] ~15-second end-to-end smoke test (Delta + Iceberg + vectors)
 	@$(PY) scripts/verify_lite.py
@@ -36,8 +57,13 @@ test: ## [lite] Run the pytest suite the instructor grades against
 	@$(PYTEST) -q
 
 lab: ## [lite] Open Jupyter Lab on http://localhost:8888
-	@$(JUPYTEXT) --to notebook --update notebooks/*.py 2>/dev/null || true
+ifeq ($(OS),Windows_NT)
+	-@$(JUPYTEXT) --to notebook --update notebooks/*.py 2>$$null
 	@$(JUPYTER) lab --notebook-dir=notebooks --ServerApp.token='' --no-browser
+else
+	-@$(JUPYTEXT) --to notebook --update notebooks/*.py 2>/dev/null || true
+	@$(JUPYTER) lab --notebook-dir=notebooks --ServerApp.token='' --no-browser
+endif
 
 data: ## [lite] Generate 200K-row Bronze sample for NB4
 	@$(PY) scripts/generate_data_lite.py
@@ -52,7 +78,11 @@ simulate: ## [lite] Abuse the lab the way students do (12 scenarios; SIM_FAST=1 
 	@$(PY) tests/simulate_students.py
 
 clean: ## [lite] Wipe venv + lakehouse data
+ifeq ($(OS),Windows_NT)
+	-@Remove-Item -Recurse -Force $(VENV), _lakehouse, notebooks/.ipynb_checkpoints, .pytest_cache -ErrorAction SilentlyContinue
+else
 	rm -rf $(VENV) _lakehouse notebooks/.ipynb_checkpoints .pytest_cache
+endif
 
 # ─────────────────────────────────────────────────────────────
 # Spark on Apple `container` (optional) — macOS 15+, Apple silicon

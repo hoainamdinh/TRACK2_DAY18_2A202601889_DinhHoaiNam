@@ -92,7 +92,9 @@ def reset_catalog(name: str = "lab") -> None:
     Scoped to `name` on purpose — see `_catalog_dir`.
     """
     import shutil
+    import gc
 
+    gc.collect()
     shutil.rmtree(_catalog_dir(name), ignore_errors=True)
 
 
